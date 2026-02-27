@@ -208,6 +208,17 @@ def run_agent(sb, task: dict) -> dict:
     print(f"  [{agent_name}] Running task: {task['description'][:70]}...")
     
     result = call_llm_json(messages, model=model)
+    # Log internal reasoning (summary)
+    try:
+        sb.table("org_messages").insert({
+            "from_agent": task.get("assigned_to"),
+            "to_agent": None,
+            "task_id": task.get("id"),
+            "type": "thought",
+            "content": result.get("thought", "")[:1000]
+        }).execute()
+    except:
+        pass
     
     # Ensure required keys exist
     if "actions" not in result:
