@@ -238,90 +238,49 @@ Your org is still running normally — this task has been paused.
             print("  ⚠ Task failed 3 times but no FOUNDER_EMAIL set for escalation")
 
 def run_orchestrator():
-    """Main loop — runs once per GitHub Actions execution (every 5 minutes)."""
-    
-    print(f"\n{'='*60}")
-    print(f"🏢 ORG ORCHESTRATOR — {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}")
-    print(f"{'='*60}")
-    
     sb = get_supabase()
-    
-    # Get pending tasks, highest priority first, oldest first within same priority
-    result = sb.table("tasks").select(
-        "*, agents!tasks_assigned_to_fkey(*)"
-    ).eq(
-        "status", "pending"
-    ).order(
-        "priority", desc=True
-    ).order(
-        "created_at"
-    ).limit(20).execute()  # Process up to 20 tasks per run
-    
-    tasks = result.data or []
-    
-    if not tasks:
-        print("✓ No pending tasks. Org is idle.")
-        return
-    
-    print(f"📋 Found {len(tasks)} pending task(s)")
-    
-    completed = 0
-    failed = 0
-    
-    for task in tasks:
-        task_id = task["id"]
-        agent_name = (task.get("agents") or {}).get("name", "Unknown")
-        
-        print(f"\n▶ Task {task_id[:8]}... → {agent_name}")
-        print(f"  Description: {task['description'][:80]}")
-        
-        # Mark as in_progress
-        sb.table("tasks").update({
-            "status": "in_progress",
-            "started_at": datetime.now(timezone.utc).isoformat()
-        }).eq("id", task_id).execute()
-        
-        try:
-            # Run the agent
-            result = run_agent(sb, task)
-            
-            # Process all actions the agent wants to take
-            process_actions(sb, task, result.get("actions", []))
-            
-            # Mark complete
-            sb.table("tasks").update({
-                "status": "complete",
-                "output": result.get("response", ""),
-                "completed_at": datetime.now(timezone.utc).isoformat()
-            }).eq("id", task_id).execute()
-            
-            completed += 1
-            print(f"  ✓ Complete")
-        
-        except Exception as e:
-            error_msg = str(e)
-            print(f"  ✗ Error: {error_msg[:100]}")
-            handle_task_error(sb, task, error_msg)
-            failed += 1
-    
-    # Daily metrics snapshot (runs on first execution of each day)
-    try:
-        today = datetime.now(timezone.utc).date().isoformat()
-        existing_metric = sb.table("metrics").select("id").eq("date", today).execute()
-        if not existing_metric.data:
-            total_tasks = sb.table("tasks").select("id", count="exact").execute()
-            failed_tasks = sb.table("tasks").select("id", count="exact").eq("status", "failed").execute()
-            sb.table("metrics").insert({
-                "date": today,
-                "tasks_completed": completed,
-                "tasks_failed": failed,
-            }).execute()
-    except:
-        pass  # Metrics are nice-to-have, don't crash if they fail
-    
-    print(f"\n{'='*60}")
-    print(f"✅ Run complete: {completed} completed, {failed} failed/retried")
-    print(f"{'='*60}\n")
 
+    max_cycles = 10  # safety guard
+    cycle = 0
+
+    while cycle < max_cycles:
+        cycle += 1
+
+        result = sb.table("tasks").select(
+            "*, agents!tasks_assigned_to_fkey(*)"
+        ).eq("status", "pending") \
+         .order("priority", desc=True) \
+         .order("created_at") \
+         .limit(20).execute()
+
+        tasks = result.data or []
+
+        if not tasks:
+            break
+
+        print(f"Cycle {cycle}: {len(tasks)} task(s)")
+
+        for task in tasks:
+            task_id = task["id"]
+
+            sb.table("tasks").update({
+                "status": "in_progress",
+                "started_at": datetime.now(timezone.utc).isoformat()
+            }).eq("id", task_id).execute()
+
+            try:
+                result = run_agent(sb, task)
+                process_actions(sb, task, result.get("actions", []))
+
+                sb.table("tasks").update({
+                    "status": "complete",
+                    "output": result.get("response", ""),
+                    "completed_at": datetime.now(timezone.utc).isoformat()
+                }).eq("id", task_id).execute()
+
+            except Exception as e:
+                handle_task_error(sb, task, str(e))
+
+    print("✓ Queue drained.")
 if __name__ == "__main__":
     run_orchestrator()
