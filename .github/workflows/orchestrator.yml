@@ -1,0 +1,155 @@
+name: 🏢 Org Orchestrator
+
+on:
+  # Run every 5 minutes automatically (your org's heartbeat)
+  schedule:
+    - cron: '*/5 * * * *'
+  
+  # Allow manual trigger from GitHub UI
+  workflow_dispatch:
+    inputs:
+      founder_message:
+        description: 'Optional message to send to the org'
+        required: false
+        default: ''
+  
+  # Triggered by webhooks (e.g., from frontend or email reply)
+  repository_dispatch:
+    types: [founder_message, task_created, webhook]
+
+jobs:
+  orchestrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8  # Kill if stuck (shouldn't happen with self-healing)
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+      
+      - name: Handle direct founder message (if provided)
+        if: github.event.inputs.founder_message != '' || github.event.client_payload.message != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          FOUNDER_EMAIL: ${{ secrets.FOUNDER_EMAIL }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
+          DEFAULT_MODEL: gpt-4o-mini
+        run: |
+          cd orchestrator
+          MESSAGE="${{ github.event.inputs.founder_message }}${{ github.event.client_payload.message }}"
+          python -c "
+          from chat_ingress import handle_founder_message
+          result = handle_founder_message('$MESSAGE')
+          print(f\"\n{result['agent']['name']}: {result['response']}\")
+          "
+      
+      - name: Run main orchestrator loop
+        env:
+          # GITHUB_TOKEN is automatically provided — no setup needed for GitHub Models!
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          FOUNDER_EMAIL: ${{ secrets.FOUNDER_EMAIL }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
+          DEFAULT_MODEL: gpt-4o-mini
+        run: |
+          cd orchestrator
+          python main.py
+      
+      - name: Send weekly briefing (Sundays at 7am IST = 1:30am UTC)
+        if: github.event.schedule == '30 1 * * 0'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          FOUNDER_EMAIL: ${{ secrets.FOUNDER_EMAIL }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
+        run: |
+          cd orchestrator
+          python -c "
+          import os
+          from supabase import create_client
+          from tools.email_tool import send_weekly_briefing
+          sb = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_KEY'])
+          send_weekly_briefing(sb, os.environ['FOUNDER_EMAIL'])
+          "
+      
+      - name: Log completion
+        if: always()
+        run: |
+          echo "✅ Orchestrator run completed at $(date -u)"
+
+  # Separate job: runs research agent daily at 6am IST = 12:30am UTC
+  daily_research:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    timeout-minutes: 10
+    
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - run: pip install -r requirements.txt
+      
+      - name: Run Riya's daily research scan
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          FOUNDER_EMAIL: ${{ secrets.FOUNDER_EMAIL }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
+          DEFAULT_MODEL: Meta-Llama-3.3-70B-Instruct
+        run: |
+          cd orchestrator
+          python -c "
+          import os
+          from supabase import create_client
+          from main import process_actions
+          from agent_runner import run_agent
+
+          sb = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_KEY'])
+          
+          # Get Riya
+          riya = sb.table('agents').select('*').ilike('name', 'riya').execute()
+          if not riya.data:
+              print('Riya not found')
+              exit(0)
+          
+          riya_agent = riya.data[0]
+          
+          # Create and run research task
+          task = {
+              'id': 'daily-research',
+              'assigned_to': riya_agent['id'],
+              'assigned_by': None,
+              'parent_task_id': None,
+              'description': 'Daily market research: Scan Reddit (r/SaaS, r/entrepreneur, r/smallbusiness, r/nocode, r/webdev), Product Hunt, Hacker News for SaaS pain points and opportunities. Score the top 5 ideas. Store findings in memory under key daily_research_[today date]. If you find any exceptional opportunity (score 8+), send the founder an email.',
+              'context': 'This is your daily autonomous scan. Be thorough. Look for: complaints about existing software, tasks people do manually that could be automated, niche tools with high prices that could be undercut, emerging workflows needing tooling.',
+              'priority': 7,
+              'status': 'pending',
+              'retry_count': 0,
+              'last_error': None,
+              'agents': riya_agent
+          }
+          
+          result = run_agent(sb, task)
+          process_actions(sb, task, result.get('actions', []))
+          print(f'Riya daily scan complete: {result[\"response\"][:200]}')
+          "
