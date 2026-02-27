@@ -44,6 +44,13 @@ def process_actions(sb, task: dict, actions: list):
                         "status": "pending"
                     }).execute()
                     print(f"    → Task created for {action['assigned_to']}: {action['description'][:60]}")
+                    sb.table("org_messages").insert({
+                        "from_agent": task["assigned_to"],
+                        "to_agent": agent_id,
+                        "task_id": task["id"],
+                        "type": "delegation",
+                        "content": f"Delegated task: {action['description']}"
+                    }).execute()
                 else:
                     print(f"    ⚠ Agent not found: {action['assigned_to']}. Skipping task creation.")
             
@@ -78,6 +85,13 @@ def process_actions(sb, task: dict, actions: list):
                     "task_id": task["id"],
                     "needs_approval": action.get("needs_approval", False),
                     "approved_by_human": False
+                }).execute()
+                sb.table("org_messages").insert({
+                    "from_agent": task["assigned_to"],
+                    "to_agent": None,
+                    "task_id": task["id"],
+                    "type": "decision",
+                    "content": action["description"]
                 }).execute()
                 print(f"    → Decision logged: {action['description'][:60]}")
             
