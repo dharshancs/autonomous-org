@@ -1,42 +1,43 @@
 name: 🏢 Org Orchestrator
 
 on:
-  # Run every 5 minutes automatically (your org's heartbeat)
   schedule:
-    - cron: '*/5 * * * *'
-  
-  # Allow manual trigger from GitHub UI
+    - cron: '*/5 * * * *'   # Every 5 minutes — org heartbeat
   workflow_dispatch:
     inputs:
       founder_message:
-        description: 'Optional message to send to the org'
+        description: 'Message to send to the org (e.g. Hey Riya, find 3 SaaS ideas)'
         required: false
         default: ''
-  
-  # Triggered by webhooks (e.g., from frontend or email reply)
   repository_dispatch:
     types: [founder_message, task_created, webhook]
+
+# ── THIS IS THE FIX ──────────────────────────────────────────
+# Explicitly grant models permission so GitHub Models (free LLMs) work
+permissions:
+  contents: read
+  models: read
+# ─────────────────────────────────────────────────────────────
 
 jobs:
   orchestrate:
     runs-on: ubuntu-latest
-    timeout-minutes: 8  # Kill if stuck (shouldn't happen with self-healing)
-    
+    timeout-minutes: 8
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-      
+
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-      
-      - name: Handle direct founder message (if provided)
+        run: pip install -r requirements.txt
+
+      - name: Handle direct founder message
         if: github.event.inputs.founder_message != '' || github.event.client_payload.message != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -54,10 +55,9 @@ jobs:
           result = handle_founder_message('$MESSAGE')
           print(f\"\n{result['agent']['name']}: {result['response']}\")
           "
-      
-      - name: Run main orchestrator loop
+
+      - name: Run orchestrator loop
         env:
-          # GITHUB_TOKEN is automatically provided — no setup needed for GitHub Models!
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -68,37 +68,20 @@ jobs:
         run: |
           cd orchestrator
           python main.py
-      
-      - name: Send weekly briefing (Sundays at 7am IST = 1:30am UTC)
-        if: github.event.schedule == '30 1 * * 0'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          FOUNDER_EMAIL: ${{ secrets.FOUNDER_EMAIL }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
-        run: |
-          cd orchestrator
-          python -c "
-          import os
-          from supabase import create_client
-          from tools.email_tool import send_weekly_briefing
-          sb = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_KEY'])
-          send_weekly_briefing(sb, os.environ['FOUNDER_EMAIL'])
-          "
-      
+
       - name: Log completion
         if: always()
-        run: |
-          echo "✅ Orchestrator run completed at $(date -u)"
+        run: echo "✅ Orchestrator run completed at $(date -u)"
 
-  # Separate job: runs research agent daily at 6am IST = 12:30am UTC
+  # Riya's daily research — runs every day at 6am IST (12:30am UTC)
   daily_research:
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule'
     timeout-minutes: 10
-    
+    permissions:
+      contents: read
+      models: read
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -106,8 +89,8 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
       - run: pip install -r requirements.txt
-      
-      - name: Run Riya's daily research scan
+
+      - name: Riya daily research scan
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -125,31 +108,26 @@ jobs:
           from agent_runner import run_agent
 
           sb = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_KEY'])
-          
-          # Get Riya
           riya = sb.table('agents').select('*').ilike('name', 'riya').execute()
           if not riya.data:
-              print('Riya not found')
+              print('Riya not found — run seed.sql first')
               exit(0)
-          
+
           riya_agent = riya.data[0]
-          
-          # Create and run research task
           task = {
               'id': 'daily-research',
               'assigned_to': riya_agent['id'],
               'assigned_by': None,
               'parent_task_id': None,
-              'description': 'Daily market research: Scan Reddit (r/SaaS, r/entrepreneur, r/smallbusiness, r/nocode, r/webdev), Product Hunt, Hacker News for SaaS pain points and opportunities. Score the top 5 ideas. Store findings in memory under key daily_research_[today date]. If you find any exceptional opportunity (score 8+), send the founder an email.',
-              'context': 'This is your daily autonomous scan. Be thorough. Look for: complaints about existing software, tasks people do manually that could be automated, niche tools with high prices that could be undercut, emerging workflows needing tooling.',
+              'description': 'Daily market research: Scan Reddit (r/SaaS, r/entrepreneur, r/smallbusiness, r/nocode, r/webdev), Product Hunt, Hacker News for SaaS pain points. Score top 5 ideas on: market size, competition, buildability, revenue potential. Store in memory key daily_research_$(date +%Y-%m-%d). Email founder immediately if any idea scores 8+.',
+              'context': 'Autonomous daily scan. Look for: software complaints, manual tasks that could be automated, expensive tools that could be undercut with a free/cheap alternative, underserved niches.',
               'priority': 7,
               'status': 'pending',
               'retry_count': 0,
               'last_error': None,
               'agents': riya_agent
           }
-          
           result = run_agent(sb, task)
           process_actions(sb, task, result.get('actions', []))
-          print(f'Riya daily scan complete: {result[\"response\"][:200]}')
+          print(f'Riya scan complete: {result[\"response\"][:300]}')
           "
