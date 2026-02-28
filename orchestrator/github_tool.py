@@ -1,7 +1,7 @@
 import os
 import requests
 
-TOKEN = os.environ["GITHUB_TOKEN"]
+TOKEN = os.environ["PERSONAL_GITHUB_TOKEN"]
 OWNER = os.environ["REPO_OWNER"]
 
 headers = {
