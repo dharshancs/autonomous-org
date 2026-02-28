@@ -1,133 +1,31 @@
-name: 🏢 Org Orchestrator
+name: Autonomous Org Engine
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # Every 5 minutes — org heartbeat
+    - cron: "*/5 * * * *"
   workflow_dispatch:
-    inputs:
-      founder_message:
-        description: 'Message to send to the org (e.g. Hey Riya, find 3 SaaS ideas)'
-        required: false
-        default: ''
-  repository_dispatch:
-    types: [founder_message, task_created, webhook]
 
-# ── THIS IS THE FIX ──────────────────────────────────────────
-# Explicitly grant models permission so GitHub Models (free LLMs) work
 permissions:
-  contents: read
-  models: read
-# ─────────────────────────────────────────────────────────────
+  contents: write
 
 jobs:
-  orchestrate:
+  run-engine:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          python-version: 3.11
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Handle direct founder message
-        if: github.event.inputs.founder_message != '' || github.event.client_payload.message != ''
+      - name: Run Engine
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          FOUNDER_EMAIL: ${{ secrets.FOUNDER_EMAIL }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
-          DEFAULT_MODEL: gpt-4o-mini
-        run: |
-          cd orchestrator
-          MESSAGE="${{ github.event.inputs.founder_message }}${{ github.event.client_payload.message }}"
-          python -c "
-          from chat_ingress import handle_founder_message
-          result = handle_founder_message('$MESSAGE')
-          print(f\"\n{result['agent']['name']}: {result['response']}\")
-          "
-
-      - name: Run orchestrator loop
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          FOUNDER_EMAIL: ${{ secrets.FOUNDER_EMAIL }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
-          DEFAULT_MODEL: gpt-4o-mini
-        run: |
-          cd orchestrator
-          python main.py
-
-      - name: Log completion
-        if: always()
-        run: echo "✅ Orchestrator run completed at $(date -u)"
-
-  # Riya's daily research — runs every day at 6am IST (12:30am UTC)
-  daily_research:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      models: read
-
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-      - run: pip install -r requirements.txt
-
-      - name: Riya daily research scan
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          FOUNDER_EMAIL: ${{ secrets.FOUNDER_EMAIL }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
-          DEFAULT_MODEL: Meta-Llama-3.3-70B-Instruct
-        run: |
-          cd orchestrator
-          python -c "
-          import os
-          from supabase import create_client
-          from main import process_actions
-          from agent_runner import run_agent
-
-          sb = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_KEY'])
-          riya = sb.table('agents').select('*').ilike('name', 'riya').execute()
-          if not riya.data:
-              print('Riya not found — run seed.sql first')
-              exit(0)
-
-          riya_agent = riya.data[0]
-          task = {
-              'id': 'daily-research',
-              'assigned_to': riya_agent['id'],
-              'assigned_by': None,
-              'parent_task_id': None,
-              'description': 'Daily market research: Scan Reddit (r/SaaS, r/entrepreneur, r/smallbusiness, r/nocode, r/webdev), Product Hunt, Hacker News for SaaS pain points. Score top 5 ideas on: market size, competition, buildability, revenue potential. Store in memory key daily_research_$(date +%Y-%m-%d). Email founder immediately if any idea scores 8+.',
-              'context': 'Autonomous daily scan. Look for: software complaints, manual tasks that could be automated, expensive tools that could be undercut with a free/cheap alternative, underserved niches.',
-              'priority': 7,
-              'status': 'pending',
-              'retry_count': 0,
-              'last_error': None,
-              'agents': riya_agent
-          }
-          result = run_agent(sb, task)
-          process_actions(sb, task, result.get('actions', []))
-          print(f'Riya scan complete: {result[\"response\"][:300]}')
-          "
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          REPO_OWNER: ${{ secrets.REPO_OWNER }}
+        run: python orchestrator/main.py
